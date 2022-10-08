@@ -9,7 +9,7 @@ from ..builder import NECKS
 
 
 @NECKS.register_module()
-class SECONDFPN(BaseModule):
+class SECONDFPN_rv(BaseModule):
     """FPN used in SECOND/PointPillars/PartA2/MVXNet.
 
     Args:
@@ -34,12 +34,11 @@ class SECONDFPN(BaseModule):
                  init_cfg=None):
         # if for GroupNorm,
         # cfg is dict(type='GN', num_groups=num_groups, eps=1e-3, affine=True)
-        super(SECONDFPN, self).__init__(init_cfg=init_cfg)
+        super(SECONDFPN_rv, self).__init__(init_cfg=init_cfg)
         assert len(out_channels) == len(upsample_strides) == len(in_channels)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.fp16_enabled = False
-        self.fix = nn.Conv2d(self.out_channels[1], self.out_channels[1], (1, 2))
 
         deblocks = []
         for i, out_channel in enumerate(out_channels):
@@ -65,7 +64,7 @@ class SECONDFPN(BaseModule):
                                     nn.ReLU(inplace=True))
             deblocks.append(deblock)
         self.deblocks = nn.ModuleList(deblocks)
-
+        self.fix = nn.Conv2d(self.out_channels[1], self.out_channels[1], (1, 2))
         if init_cfg is None:
             self.init_cfg = [
                 dict(type='Kaiming', layer='ConvTranspose2d'),
