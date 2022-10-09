@@ -11,6 +11,9 @@ from .utils import VFELayer, get_paddings_indicator
 import torch.nn.functional as F
 import numpy as np
 
+from point_transformer_pytorch import PointTransformerLayer
+
+
 def index_points(points, idx):
     """
     Input:
@@ -78,6 +81,51 @@ class Self_attention_Block(nn.Module):
         res = self.fc2(res) + pre
         return res, attn
 
+class Self_attention_Block_v2(nn.Module):
+    """
+    将输出维度由4维变成16维
+    """
+    def __init__(self, d_points, d_model, k):
+        super().__init__()
+        self.fc1 = nn.Sequential(
+            nn.Linear(d_points, 8),
+            nn.ReLU(),
+            nn.Linear(8, d_model))
+        self.fc_delta = nn.Sequential(
+            nn.Linear(3, 8),
+            nn.ReLU(),
+            nn.Linear(8, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
+        self.fc_gamma = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
+        self.w_qs = nn.Linear(d_model, d_model, bias=False)
+        self.w_ks = nn.Linear(d_model, d_model, bias=False)
+        self.w_vs = nn.Linear(d_model, d_model, bias=False)
+        self.k = k
+
+    # xyz: b x n x 3, features: b x n x f
+    def forward(self, xyz, features):
+        dists = square_distance(xyz, xyz)
+        knn_idx = dists.argsort()[:, :, :self.k]  # b x n x k
+        knn_xyz = index_points(xyz, knn_idx)
+
+        x = self.fc1(features)
+        q, k, v = self.w_qs(x), index_points(self.w_ks(x), knn_idx), index_points(self.w_vs(x), knn_idx)
+        pos_enc = self.fc_delta(xyz[:, :, None] - knn_xyz)  # b x n x k x f
+
+        attn = self.fc_gamma(q[:, :, None] - k + pos_enc)
+        attn = F.softmax(attn / np.sqrt(k.size(-1)), dim=-2)  # b x n x k x f
+
+        res = torch.einsum('bmnf,bmnf->bmf', attn, v + pos_enc)
+        res = res + x
+        return res, attn
+
+
 class Cross_attention_Block(nn.Module):
     def __init__(self, d_points, d_model, k):
         super().__init__()
@@ -119,12 +167,8 @@ class Cross_attention_Block(nn.Module):
         return res, attn
 @VOXEL_ENCODERS.register_module()
 class HardSimpleVFE_trans(nn.Module):
-    """Simple voxel feature encoder used in SECOND.
-
-    It simply averages the values of points in a voxel.
-
-    Args:
-        num_features (int, optional): Number of features to use. Default: 4.
+    """
+    使用自注意力机制将4维点云特征与体素格中的其他点云特征进行权重组合
     """
 
     def __init__(self, num_features=4):
@@ -155,12 +199,8 @@ class HardSimpleVFE_trans(nn.Module):
 
 @VOXEL_ENCODERS.register_module()
 class HardSimpleVFE_trans_v2(nn.Module):
-    """Simple voxel feature encoder used in SECOND.
-
-    It simply averages the values of points in a voxel.
-
-    Args:
-        num_features (int, optional): Number of features to use. Default: 4.
+    """
+    使用跨注意力机制将体素平均坐标与体素格中的其他点云特征进行权重组合
     """
 
     def __init__(self, num_features=4):
@@ -189,6 +229,80 @@ class HardSimpleVFE_trans_v2(nn.Module):
         features = self.trans(features[:, :, :3], features, points_mean.contiguous())
         feature_tran = features[0].sum(dim=1, keepdim=False)
         return feature_tran.contiguous()
+@VOXEL_ENCODERS.register_module()
+class HardSimpleVFE_trans_v3(nn.Module):
+    """
+    使用自注意力机制将4维点云特征与体素格中的其他点云特征进行权重组合
+    输出16维
+    """
+
+    def __init__(self, num_features=4):
+        super(HardSimpleVFE_trans_v3, self).__init__()
+        self.num_features = num_features
+        self.fp16_enabled = False
+        self.trans = Self_attention_Block_v2(4, 16, 5)
+    @force_fp32(out_fp16=True)
+    def forward(self, features, num_points, coors):
+        """Forward function.
+
+        Args:
+            features (torch.Tensor): Point features in shape
+                (N, M, 3(4)). N is the number of voxels and M is the maximum
+                number of points inside a single voxel.
+            num_points (torch.Tensor): Number of points in each voxel,
+                 shape (N, ).
+            coors (torch.Tensor): Coordinates of voxels.
+
+        Returns:
+            torch.Tensor: Mean of points inside each voxel in shape (N, 3(4))
+        """
+        features = self.trans(features[:, :, :3], features)
+        features = features[0]
+        points_mean = features.sum(
+            dim=1, keepdim=False) / num_points.type_as(features).view(-1, 1)
+        return points_mean.contiguous()
+
+
+@VOXEL_ENCODERS.register_module()
+class HardSimpleVFE_point_trans(nn.Module):
+    """Simple voxel feature encoder used in SECOND.
+
+    It simply averages the values of points in a voxel.
+
+    Args:
+        num_features (int, optional): Number of features to use. Default: 4.
+    """
+
+    def __init__(self, num_features=4):
+        super(HardSimpleVFE_point_trans, self).__init__()
+        self.num_features = num_features
+        self.fp16_enabled = False
+        self.attn = PointTransformerLayer(
+            dim=4,
+            pos_mlp_hidden_dim=8,
+            attn_mlp_hidden_mult=2,
+            num_neighbors=5  # only the 16 nearest neighbors would be attended to for each point
+        )
+
+    @force_fp32(out_fp16=True)
+    def forward(self, features, num_points, coors):
+        """Forward function.
+
+        Args:
+            features (torch.Tensor): Point features in shape
+                (N, M, 3(4)). N is the number of voxels and M is the maximum
+                number of points inside a single voxel.
+            num_points (torch.Tensor): Number of points in each voxel,
+                 shape (N, ).
+            coors (torch.Tensor): Coordinates of voxels.
+
+        Returns:
+            torch.Tensor: Mean of points inside each voxel in shape (N, 3(4))
+        """
+        features = self.attn(features, features[:, :, :3])
+        points_mean = features[:, :, :self.num_features].sum(
+            dim=1, keepdim=False) / num_points.type_as(features).view(-1, 1)
+        return points_mean.contiguous()
 
 @VOXEL_ENCODERS.register_module()
 class HardSimpleVFE(nn.Module):
