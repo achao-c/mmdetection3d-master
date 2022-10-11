@@ -6,4 +6,4 @@ _base_ = [
 
 find_unused_parameters = True  # 是否查找模型中未使用的参数
 
-lr = 0.0025
+lr = 0.0027

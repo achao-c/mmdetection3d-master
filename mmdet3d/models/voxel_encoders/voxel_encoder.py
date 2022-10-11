@@ -11,7 +11,7 @@ from .utils import VFELayer, get_paddings_indicator
 import torch.nn.functional as F
 import numpy as np
 
-from point_transformer_pytorch import PointTransformerLayer
+from point_transformer_pytorch import PointTransformerLayer, PointTransformerLayer_out_16_dimensions
 
 
 def index_points(points, idx):
@@ -240,7 +240,12 @@ class HardSimpleVFE_trans_v3(nn.Module):
         super(HardSimpleVFE_trans_v3, self).__init__()
         self.num_features = num_features
         self.fp16_enabled = False
-        self.trans = Self_attention_Block_v2(4, 16, 5)
+        #self.trans = Self_attention_Block_v2(4, 16, 5)
+        self.trans = PointTransformerLayer_out_16_dimensions(
+            dim=4,
+            pos_mlp_hidden_dim=16,
+            attn_mlp_hidden_mult=4,
+            num_neighbors=5)
     @force_fp32(out_fp16=True)
     def forward(self, features, num_points, coors):
         """Forward function.
@@ -256,8 +261,9 @@ class HardSimpleVFE_trans_v3(nn.Module):
         Returns:
             torch.Tensor: Mean of points inside each voxel in shape (N, 3(4))
         """
-        features = self.trans(features[:, :, :3], features)
-        features = features[0]
+        # features = self.trans(features[:, :, :3], features)
+        features = self.trans(features, features[:, :, :3])
+        # features = features[0]
         points_mean = features.sum(
             dim=1, keepdim=False) / num_points.type_as(features).view(-1, 1)
         return points_mean.contiguous()
