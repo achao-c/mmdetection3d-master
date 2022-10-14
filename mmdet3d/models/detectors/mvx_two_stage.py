@@ -278,6 +278,7 @@ class MVXTwoStageDetector(Base3DDetector):
                                                 gt_labels_3d, img_metas,
                                                 gt_bboxes_ignore)
             losses.update(losses_pts)
+            #print(losses_pts)
         if img_feats:
             losses_img = self.forward_img_train(
                 img_feats,
